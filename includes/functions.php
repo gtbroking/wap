@@ -1,6 +1,12 @@
 <?php
 require_once 'config.php';
 
+// Get current domain for QR code generation
+function getCurrentDomain() {
+    $protocol = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http';
+    return $protocol . '://' . $_SERVER['HTTP_HOST'];
+}
+
 // Site Settings Functions
 function getSiteSettings() {
     global $pdo;
@@ -436,6 +442,104 @@ function createAdmin($username, $email, $password, $role = 'admin') {
     }
 }
 
+// User Functions
+function createUser($data) {
+    global $pdo;
+    try {
+        $passwordHash = password_hash($data['password'], PASSWORD_DEFAULT);
+        $stmt = $pdo->prepare("INSERT INTO users (name, username, email, phone, password_hash) VALUES (?, ?, ?, ?, ?)");
+        return $stmt->execute([
+            $data['name'],
+            $data['username'],
+            $data['email'],
+            $data['phone'],
+            $passwordHash
+        ]);
+    } catch (PDOException $e) {
+        return false;
+    }
+}
+
+function authenticateUser($username, $password) {
+    global $pdo;
+    try {
+        $stmt = $pdo->prepare("SELECT * FROM users WHERE (username = ? OR email = ?) AND status = 'active'");
+        $stmt->execute([$username, $username]);
+        $user = $stmt->fetch();
+        
+        if ($user && password_verify($password, $user['password_hash'])) {
+            // Update last login
+            $stmt = $pdo->prepare("UPDATE users SET last_login = NOW() WHERE id = ?");
+            $stmt->execute([$user['id']]);
+            
+            return $user;
+        }
+        return false;
+    } catch (PDOException $e) {
+        return false;
+    }
+}
+
+function getUserOrders($userId) {
+    global $pdo;
+    try {
+        $stmt = $pdo->prepare("SELECT * FROM orders WHERE user_id = ? ORDER BY created_at DESC");
+        $stmt->execute([$userId]);
+        return $stmt->fetchAll();
+    } catch (PDOException $e) {
+        return [];
+    }
+}
+
+// Inquiry Functions
+function createInquiry($data) {
+    global $pdo;
+    try {
+        $stmt = $pdo->prepare("INSERT INTO inquiries (user_name, user_phone, user_email, products, message, status) VALUES (?, ?, ?, ?, ?, ?)");
+        return $stmt->execute([
+            $data['user_name'],
+            $data['user_phone'],
+            $data['user_email'],
+            json_encode($data['products']),
+            $data['message'],
+            'pending'
+        ]);
+    } catch (PDOException $e) {
+        return false;
+    }
+}
+
+function getInquiries($limit = null) {
+    global $pdo;
+    try {
+        $sql = "SELECT * FROM inquiries ORDER BY created_at DESC";
+        if ($limit) {
+            $sql .= " LIMIT " . intval($limit);
+        }
+        $stmt = $pdo->query($sql);
+        return $stmt->fetchAll();
+    } catch (PDOException $e) {
+        return [];
+    }
+}
+
+// Free Website Request Functions
+function createFreeWebsiteRequest($data) {
+    global $pdo;
+    try {
+        $stmt = $pdo->prepare("INSERT INTO free_website_requests (name, mobile, email, business_details, status) VALUES (?, ?, ?, ?, ?)");
+        return $stmt->execute([
+            $data['name'],
+            $data['mobile'],
+            $data['email'],
+            $data['business_details'],
+            'pending'
+        ]);
+    } catch (PDOException $e) {
+        return false;
+    }
+}
+
 // Utility Functions
 function sanitizeInput($input) {
     return htmlspecialchars(trim($input), ENT_QUOTES, 'UTF-8');
@@ -560,6 +664,42 @@ function getRevenueChart($days = 7) {
         return $stmt->fetchAll();
     } catch (PDOException $e) {
         return [];
+    }
+}
+
+// Admin Bypass Functions
+function generateBypassToken($adminId) {
+    global $pdo;
+    try {
+        $token = bin2hex(random_bytes(32));
+        $expiresAt = date('Y-m-d H:i:s', strtotime('+1 hour'));
+        
+        $stmt = $pdo->prepare("INSERT INTO admin_bypass_tokens (admin_id, token, expires_at) VALUES (?, ?, ?)");
+        $stmt->execute([$adminId, $token, $expiresAt]);
+        
+        return $token;
+    } catch (PDOException $e) {
+        return false;
+    }
+}
+
+function validateBypassToken($token) {
+    global $pdo;
+    try {
+        $stmt = $pdo->prepare("SELECT a.* FROM admins a JOIN admin_bypass_tokens t ON a.id = t.admin_id WHERE t.token = ? AND t.expires_at > NOW() AND t.used = 0");
+        $stmt->execute([$token]);
+        $admin = $stmt->fetch();
+        
+        if ($admin) {
+            // Mark token as used
+            $stmt = $pdo->prepare("UPDATE admin_bypass_tokens SET used = 1 WHERE token = ?");
+            $stmt->execute([$token]);
+            
+            return $admin;
+        }
+        return false;
+    } catch (PDOException $e) {
+        return false;
     }
 }
 ?>
